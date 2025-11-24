@@ -6,11 +6,15 @@ using System.ComponentModel.DataAnnotations;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace MiniValidation;
 
 internal class TypeDetailsCache
 {
+#if NET10_0
+    private static readonly NullabilityInfoContext nullabilityInfoContext = new NullabilityInfoContext();
+#endif
     private static readonly PropertyDetails[] _emptyPropertyDetails = Array.Empty<PropertyDetails>();
     private readonly ConcurrentDictionary<Type, (PropertyDetails[] Properties, bool RequiresAsync)> _cache = new();
 
@@ -212,8 +216,39 @@ internal class TypeDetailsCache
             }
         }
 
+#if NET10_0
+        /*
+         * Handling the modifier "required" (https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/required)
+         */
+        var hasRequiredAttribute = validationAttributes?.Any(x => x is RequiredAttribute) == true;
+        if (!hasRequiredAttribute && IsRequiredNonNullable(property))
+        {
+            validationAttributes ??= new();
+            validationAttributes.Add(new RequiredAttribute());
+        }
+#endif
+
         return new(validationAttributes?.ToArray(), displayAttribute, skipRecursionAttribute);
     }
+
+#if NET10_0
+    private static bool IsRequiredNonNullable(PropertyInfo property)
+    {
+        if (!property.PropertyType.IsValueType)
+        {
+            var hasRequiredModifier = property.GetCustomAttributes<RequiredMemberAttribute>().Any(); // Indicates whether the property includes the "required" modifier
+            if (hasRequiredModifier)
+            {
+                var nullabilityInfo = nullabilityInfoContext.Create(property);
+                if (nullabilityInfo.ReadState != NullabilityState.Nullable || nullabilityInfo.WriteState != NullabilityState.Nullable)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+#endif
 
     private static bool TryGetAttributesViaTypeDescriptor(PropertyInfo property, [NotNullWhen(true)] out IEnumerable<Attribute>? typeDescriptorAttributes)
     {
